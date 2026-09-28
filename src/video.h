@@ -338,8 +338,16 @@ namespace video {
 
   extern int active_hevc_mode;
   extern int active_av1_mode;
+  // PyroWave mode, following the same convention as hevc_mode/av1_mode:
+  // 0 = auto, 1 = disabled, 2 = SDR, 3 = HDR.
+  // Stays at 1 (disabled) until the PyroWave encode session is wired up, so that
+  // negotiating PyroWave is never advertised before the encoder can actually serve it.
+  extern int active_pyrowave_mode;
   extern bool last_encoder_probe_supported_ref_frames_invalidation;
-  extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;  // 0 - H.264, 1 - HEVC, 2 - AV1
+  // 0 - H.264, 1 - HEVC, 2 - AV1. PyroWave is deliberately absent: it is only
+  // implemented as 8-bit 4:2:0, so there is no 4:4:4 capability to probe for. Adding a
+  // fourth slot is only needed if a 4:4:4/10-bit PyroWave path is ever implemented.
+  extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;
 
   void capture(
     safe::mail_t mail,

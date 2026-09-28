@@ -30,6 +30,7 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "pyrowave_protocol.h"
 #include "process.h"
 #include "rtsp.h"
 #include "stream.h"
@@ -985,6 +986,10 @@ namespace nvhttp {
       if (video::last_encoder_probe_supported_yuv444_for_codec[2]) {
         codec_mode_flags |= SCM_AV1_HIGH10_444;
       }
+    }
+    // PyroWave is 8-bit 4:2:0 only, so there are no per-profile bits to add here.
+    if (video::active_pyrowave_mode >= 2) {
+      codec_mode_flags |= SCM_PYROWAVE;
     }
     tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 

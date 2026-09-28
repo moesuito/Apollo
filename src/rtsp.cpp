@@ -27,6 +27,7 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "network.h"
+#include "pyrowave_protocol.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
@@ -823,6 +824,13 @@ namespace rtsp_stream {
       ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
     }
 
+    // Payload type 96 is the H.264 one already in use, so PyroWave takes 99 to stay
+    // clear of both 96 (H.264) and 98 (AV1). The client matches on the
+    // "pyrowave/90000" marker rather than the payload type itself.
+    if (video::active_pyrowave_mode != 1) {
+      ss << "a=rtpmap:99 "sv << video::RTP_MAP_PYROWAVE << std::endl;
+    }
+
     if (!session.surround_params.empty()) {
       // If we have our own surround parameters, advertise them twice first
       ss << "a=fmtp:97 surround-params="sv << session.surround_params << std::endl;
@@ -1141,6 +1149,13 @@ namespace rtsp_stream {
 
     if (config.monitor.videoFormat == 2 && video::active_av1_mode == 1) {
       BOOST_LOG(warning) << "AV1 is disabled, yet the client requested AV1"sv;
+
+      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return;
+    }
+
+    if (config.monitor.videoFormat == video::VIDEO_FORMAT_PYROWAVE && video::active_pyrowave_mode == 1) {
+      BOOST_LOG(warning) << "PyroWave is disabled, yet the client requested PyroWave"sv;
 
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
