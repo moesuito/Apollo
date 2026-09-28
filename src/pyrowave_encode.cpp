@@ -117,7 +117,12 @@ namespace video {
       }
     } guard {shared_handle};
 
-    if (pyrowave::image_from_d3d11_texture(m_device, shared_handle, bgra, m_image) != pyrowave::result_e::ok) {
+    D3D11_TEXTURE2D_DESC tex_desc {};
+    texture->GetDesc(&tex_desc);
+
+    if (pyrowave::image_from_d3d11_texture(m_device, shared_handle, bgra,
+                                           static_cast<int>(tex_desc.Width),
+                                           static_cast<int>(tex_desc.Height), m_image) != pyrowave::result_e::ok) {
       return -1;
     }
 

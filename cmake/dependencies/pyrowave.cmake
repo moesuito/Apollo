@@ -13,6 +13,8 @@
 set(PYROWAVE_SOURCE_DIR "" CACHE PATH
         "Path to a PyroWave source checkout (the directory containing pyrowave.h)")
 
+option(PYROWAVE_BUILD_TESTS "Build the standalone PyroWave encode check" ON)
+
 if(NOT PYROWAVE_SOURCE_DIR)
     # Fall back to the workspace layout used during development, where the codec
     # is cloned as a sibling of this repository.
@@ -112,6 +114,48 @@ if(PYROWAVE_SOURCE_DIR AND WIN32)
     # host executable, so it is resolved at run time without any link-time
     # involvement here.
     set(PYROWAVE_LINK_LIBRARIES "${PYROWAVE_BUILD_DIR}/libpyrowave-shared.dll.a")
+
+    # Standalone check of the encode path that does not need a display.
+    #
+    # The host's own encoder probe creates a display_t, which requires a display, so
+    # on a headless machine nothing after process start gets exercised. This target
+    # covers the display-independent part: the wrapper, the D3D11 import, the encode
+    # and the bitrate math. It builds the same translation units the host uses, so a
+    # pass here is real evidence about the host's code, not a parallel implementation.
+    if(PYROWAVE_BUILD_TESTS)
+        add_executable(pyrowave_encode_test
+                "${CMAKE_SOURCE_DIR}/src/pyrowave_encode_test.cpp"
+                "${CMAKE_SOURCE_DIR}/src/pyrowave_codec.cpp"
+                "${CMAKE_SOURCE_DIR}/src/pyrowave_bitrate.cpp")
+        # The two shared translation units pull in src/logging.h, hence Boost.Log, so
+        # they need the same Boost include path and libraries as the main target.
+        # The main target gets those from the directory-scoped include_directories()
+        # in compile_definitions/common.cmake, which does not apply here.
+        target_include_directories(pyrowave_encode_test PRIVATE
+                "${CMAKE_SOURCE_DIR}"
+                "${PYROWAVE_SOURCE_DIR}"
+                "${PYROWAVE_SOURCE_DIR}/eval-results"
+                "${_pyrowave_vulkan_include}"
+                ${Boost_INCLUDE_DIRS})
+        target_link_libraries(pyrowave_encode_test
+                "${PYROWAVE_BUILD_DIR}/libpyrowave-shared.dll.a"
+                d3d11 dxgi
+                ${Boost_LIBRARIES})
+        target_compile_definitions(pyrowave_encode_test PRIVATE
+                WIN32_LEAN_AND_MEAN NOMINMAX
+                # The main target links Boost.Log statically (it is linked -static
+                # overall), so this must match or the symbols resolve against a
+                # different ABI and every boost::log reference comes out undefined.
+                BOOST_LOG_STATIC_LINK)
+        set_target_properties(pyrowave_encode_test PROPERTIES
+                CXX_STANDARD 23
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools")
+
+        add_custom_command(TARGET pyrowave_encode_test POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${PYROWAVE_DLL}" "$<TARGET_FILE_DIR:pyrowave_encode_test>"
+                COMMENT "Copying libpyrowave-shared-0.dll next to the encode test")
+    endif()
 
 elseif(PYROWAVE_SOURCE_DIR)
     message(STATUS "PyroWave: source found but only the Windows implementation exists; skipping")

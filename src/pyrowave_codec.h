@@ -333,8 +333,12 @@ namespace pyrowave {
    * @param shared_handle A shared handle from IDXGIResource1::CreateSharedHandle.
    * @param bgra Whether the source is DXGI_FORMAT_B8G8R8A8_UNORM. Kept explicit
    *             because the capture path can also deliver R16G16B16A16_FLOAT.
+   * @param width Texture width in pixels.
+   * @param height Texture height in pixels. Both are required: the codec validates
+   *               the VkImageCreateInfo this call builds rather than deriving the
+   *               extent from the handle.
    */
-  result_e image_from_d3d11_texture(const device_t &device, void *shared_handle, bool bgra, image_t &image);
+  result_e image_from_d3d11_texture(const device_t &device, void *shared_handle, bool bgra, int width, int height, image_t &image);
 
   result_e sync_object_from_d3d11_fence(const device_t &device, void *fence_handle, sync_object_t &sync);
 

@@ -32,37 +32,60 @@ namespace pyrowave {
     // nowhere to put the 8 byte frame header.
     constexpr std::size_t min_frame_bytes = 2048;
 
-    // Sanity ceiling. At 3440x1440 the frame itself can reach several hundred KB,
-    // but anything past this is a bug, not a legitimate budget.
-    constexpr std::size_t max_frame_bytes = 8u * 1024u * 1024u;
+    // Sanity ceiling. Measured against the codec author's own regression
+    // (regression_probe, see AGENTS.md 4.6), the largest legitimate budget is
+    // 3840x2160 at 50 dB / 60 fps, which is 4185243 bytes per frame. This ceiling
+    // sits above that, so it never binds on a real configuration - it exists only to
+    // catch a nonsense config rather than to shape normal output.
+    constexpr std::size_t max_frame_bytes = 6u * 1024u * 1024u;
 
     /**
      * @brief Estimate Mbit/s for a frame from the codec author's regression.
      */
     double estimate_mbits(double psnr, int width, int height, int fps) {
-      auto pixels = static_cast<long long>(width) * height;
-
-      // The regression asserts on out-of-range inputs, so clamp rather than
-      // assert. Two cases matter here:
+      // The regression takes a *resolution* and computes num_pixels = width * height
+      // internally, so clamping the pixel count and passing it as the width would
+      // multiply the area again. It asserts on out-of-range input, so the resolution
+      // itself is scaled to fit while keeping the aspect ratio.
       //
-      //  - Our target is 3440x1440 = 4.95 MP, which is inside the tabulated
-      //    range (max 8.29 MP) but its 21:9 aspect ratio is *outside* what the
-      //    author validated, so the number is an extrapolation (plan 4.5).
-      //  - Low resolutions such as 1280x720 sit exactly on the lower bound.
-      int clamped_pixels = static_cast<int>(std::clamp<long long>(pixels, regression_min_pixels, regression_max_pixels));
-      int clamped_psnr = static_cast<int>(std::lround(std::clamp(psnr, static_cast<double>(regression_min_psnr), static_cast<double>(regression_max_psnr))));
+      // Both ends of the range are reachable in practice: 1280x720 is exactly the
+      // documented lower bound, and 3440x1440 (4.95 MP) is inside the range although
+      // its 21:9 aspect is outside what the author validated, so that number is an
+      // extrapolation (plan 4.5).
+      auto pixels = static_cast<long long>(width) * height;
+      int fit_width = width;
+      int fit_height = height;
 
-      if (pixels != clamped_pixels) {
-        BOOST_LOG(warning) << "PyroWave: " << pixels << " pixels is outside the regression range ["
-                        << regression_min_pixels << ", " << regression_max_pixels << "], clamping to "
-                        << clamped_pixels;
+      if (pixels > regression_max_pixels) {
+        fit_height = std::max(1, static_cast<int>(regression_max_pixels / width));
+      }
+      else if (pixels < regression_min_pixels) {
+        fit_width = std::max(1, static_cast<int>(regression_min_pixels / height));
+      }
+      else {
+        fit_width = width;
+        fit_height = height;
       }
 
-      // height_factor 1.00 means the estimate already accounts for the actual
-      // height, so no extra scaling is needed. Non-square pixels and anamorphic
-      // sources are not a game streaming case.
+      if (fit_width != width || fit_height != height) {
+        BOOST_LOG(warning) << "PyroWave: " << width << 'x' << height << " is outside the regression range ["
+                        << regression_min_pixels << ", " << regression_max_pixels << "] pixels, "
+                        << "estimating at " << fit_width << 'x' << fit_height << " instead";
+      }
+
+      const int clamped_psnr = static_cast<int>(std::lround(std::clamp(psnr, static_cast<double>(regression_min_psnr), static_cast<double>(regression_max_psnr))));
+
+      if (psnr != clamped_psnr) {
+        BOOST_LOG(warning) << "PyroWave: PSNR target " << psnr << " dB is outside the tabulated range ["
+                        << regression_min_psnr << ", " << regression_max_psnr << "], using "
+                        << clamped_psnr << " dB";
+      }
+
+      // height_factor 1.00 means the estimate already accounts for the actual height,
+      // so no extra scaling is needed. Non-square pixels and anamorphic sources are
+      // not a game streaming case.
       return pyrowave_psnr_hvs_m_h_estimate_mbits(
-        clamped_psnr, clamped_pixels, height,
+        clamped_psnr, fit_width, fit_height,
         PYROWAVE_HEIGHT_FACTOR_1_00, /*chroma444=*/ 0, static_cast<double>(fps));
     }
 
@@ -95,24 +118,20 @@ namespace pyrowave {
       bytes_per_frame *= (100.0 - std::min(99, request.fec_percentage)) / 100.0;
     }
 
-    // Reserve headroom for the per-packet protocol headers. Moonlight spends 56
-    // bytes per packet (IV 12 + GCM tag 16 + RTP 12 + NV_VIDEO_PACKET 16), and
-    // the packet count follows from the payload size, so solving for the payload
-    // that lands on the target total is a small fixed-point iteration.
     auto budget = static_cast<std::size_t>(bytes_per_frame);
     budget = std::clamp(budget, min_frame_bytes, max_frame_bytes);
 
-    for (int i = 0; i < 8; ++i) {
-      const std::size_t packets = (budget + request.packet_size - 1) / request.packet_size;
-      if (packets == 0) {
-        break;
-      }
-      const std::size_t with_headers = budget + packets * 56;
-      const std::size_t adjusted = budget + (with_headers - budget);
-      if (adjusted == budget) {
-        break;
-      }
-      budget = std::clamp(adjusted, min_frame_bytes, max_frame_bytes);
+    // Moonlight spends 56 bytes per packet of protocol overhead (IV 12 + GCM tag 16 +
+    // RTP 12 + NV_VIDEO_PACKET 16), and the packet count follows from the payload
+    // size. Since the overhead is ~4% of a 1392-byte packet, folding it in as a
+    // division rather than an iteration is accurate to well under a percent and
+    // cannot diverge: dividing by (1 - 56/packet_size) always moves the budget down,
+    // so there is no fixed point to search for.
+    if (request.packet_size > 56) {
+      const double overhead_factor = static_cast<double>(request.packet_size) /
+                                     static_cast<double>(request.packet_size - 56);
+      budget = static_cast<std::size_t>(static_cast<double>(budget) / overhead_factor);
+      budget = std::clamp(budget, min_frame_bytes, max_frame_bytes);
     }
 
     BOOST_LOG(info) << "PyroWave: " << request.width << 'x' << request.height << '@' << fps

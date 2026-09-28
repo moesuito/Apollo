@@ -83,18 +83,31 @@ namespace pyrowave {
     return device_t {reinterpret_cast<void *>(device)};
   }
 
-  result_e image_from_d3d11_texture(const device_t &device, void *shared_handle, bool bgra, image_t &image) {
+  result_e image_from_d3d11_texture(const device_t &device, void *shared_handle, bool bgra, int width, int height, image_t &image) {
     auto *pyro_device = reinterpret_cast<::pyrowave_device>(device.get());
+
+    // pyrowave_image_create validates this struct rather than deriving it from the
+    // handle: it rejects a null pointer outright, and separately checks tiling,
+    // imageType and sharingMode. The values below mirror the working reference in
+    // pyrowave/encode_desktop.cpp, which imports a DXGI-captured desktop texture -
+    // the same kind of resource the host passes in.
+    VkImageCreateInfo create_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    create_info.imageType = VK_IMAGE_TYPE_2D;
+    create_info.format = bgra ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
+    create_info.extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
+    create_info.mipLevels = 1;
+    create_info.arrayLayers = 1;
+    create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     ::pyrowave_image_create_info info = {};
     info.device = pyro_device;
     info.external_handle = reinterpret_cast<::pyrowave_os_handle>(shared_handle);
     info.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
-
-    // For D3D11 import the create_info's format/usage fields are not consulted -
-    // the driver derives them from the resource itself. The bit above is what
-    // selects the D3D11 import path.
-    static_cast<void>(bgra);
+    info.image_create_info = &create_info;
 
     ::pyrowave_image pyro_image = nullptr;
     if (check(::pyrowave_image_create(&info, &pyro_image), "image_create") != result_e::ok) {
@@ -110,11 +123,14 @@ namespace pyrowave {
 
     ::pyrowave_sync_object_create_info info = {};
     info.device = pyro_device;
-    // A NULL external_handle asks the codec to create a fresh, exportable
-    // timeline semaphore rather than import one.
+    // A zero external_handle asks the codec to create a fresh, exportable timeline
+    // semaphore rather than import one. pyrowave_c.cpp rejects that combination
+    // with PYROWAVE_ERROR_INVALID_ARGUMENT unless IMPORT_TEMPORARY is set, so the
+    // flag is mandatory here rather than a choice.
     info.external_handle = 0;
     info.handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
     info.semaphore_type = VK_SEMAPHORE_TYPE_TIMELINE;
+    info.import_flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
 
     ::pyrowave_sync_object pyro_sync = nullptr;
     if (check(::pyrowave_sync_object_create(&info, &pyro_sync), "sync_object_create (own)") != result_e::ok) {
