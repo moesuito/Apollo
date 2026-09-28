@@ -143,12 +143,21 @@ namespace video {
 
     refresh_rate_control();
 
-    // Two timeline values per frame: the encoder waits for `acquire` before
-    // reading the capture texture, and signals `release` when it is done. The
-    // capture thread signals `acquire` on the shared fence. The +1 is because a
-    // timeline semaphore's value must be strictly greater than the one it last
-    // signalled.
-    const std::uint64_t acquire = ++m_timeline;
+    // Timeline values for the acquire/release handshake.
+    //
+    // acquire is the value the encoder must wait for and release is the one it
+    // signals. The sync object here is host-owned (created with create_own()) and
+    // nothing on the D3D11 side ever signals it: the capture textures carry their
+    // own keyed mutex, which is what actually serializes capture against encode.
+    // So the acquire value must be one the semaphore has already reached, or the
+    // encoder blocks forever. Starting the timeline at 0 gives acquire == release - 1
+    // on every frame, which keeps the wait trivially satisfied while still advancing
+    // the release value monotonically.
+    //
+    // Using ++m_timeline for both (acquire = 1 on the first frame) deadlocks the
+    // encoder on a semaphore nothing will ever reach. This was observed, not
+    // guessed: the host hung with the log stopping exactly at the encode call.
+    const std::uint64_t acquire = m_timeline;
     const std::uint64_t release = ++m_timeline;
 
     if (m_encoder.encode_from_image(m_image, acquire, release) != pyrowave::result_e::ok) {

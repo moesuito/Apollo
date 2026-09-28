@@ -523,6 +523,10 @@ namespace platf {
      * on platforms where it is not implemented.
      */
     virtual std::unique_ptr<encode_device_t> make_pyrowave_encode_device() {
+      // Logged rather than returning a silent nullptr: the probe distinguishes
+      // "this display type cannot do PyroWave" from "the device failed to
+      // initialize", and without this the two look identical from the outside.
+      BOOST_LOG(info) << "PyroWave: this display type does not implement the PyroWave encode device"sv;
       return nullptr;
     }
 

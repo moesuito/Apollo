@@ -129,11 +129,31 @@ namespace video {
   };
 
   struct encoder_platform_formats_pyrowave: encoder_platform_formats_t {
-    // PyroWave consumes the D3D11 capture texture directly and does its own
-    // scaling and RGB -> YCbCr conversion on the GPU, so it needs none of the
-    // avcodec pixel formats the other encoders list. The only formats that matter
-    // are the ones the capture path can produce, and those are handled by the
-    // image import rather than declared here.
+    /**
+     * PyroWave consumes the D3D11 capture texture directly and does its own
+     * scaling and RGB -> YCbCr conversion on the GPU, so it needs none of the
+     * avcodec pixel formats the other encoders list. The only formats that matter
+     * are the ones the capture path can produce, and those are handled by the
+     * image import rather than declared here.
+     *
+     * The constructor is NOT optional. dev_type and the four pix_fmt members are
+     * plain values in the base with no defaults, so a struct left empty passes
+     * uninitialized garbage to reset_display() - which then picks a display_t
+     * subclass that has no make_pyrowave_encode_device() override and hands back
+     * the base nullptr, with nothing logged. That is exactly what happened before
+     * this was set.
+     *
+     * dxgi is the only platform path implemented (D3D11 capture textures are the
+     * only thing the encoder imports). The pix_fmts are never read for PyroWave
+     * but are set to a sane value rather than left indeterminate.
+     */
+    encoder_platform_formats_pyrowave() {
+      encoder_platform_formats_t::dev_type = platf::mem_type_e::dxgi;
+      encoder_platform_formats_t::pix_fmt_8bit = platf::pix_fmt_e::nv12;
+      encoder_platform_formats_t::pix_fmt_10bit = platf::pix_fmt_e::p010;
+      encoder_platform_formats_t::pix_fmt_yuv444_8bit = platf::pix_fmt_e::ayuv;
+      encoder_platform_formats_t::pix_fmt_yuv444_10bit = platf::pix_fmt_e::yuv444p16;
+    }
   };
 
   struct encoder_t {
