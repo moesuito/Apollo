@@ -513,6 +513,19 @@ namespace platf {
       return nullptr;
     }
 
+    /**
+     * @brief Create the PyroWave encode device for this display.
+     *
+     * PyroWave is neither an FFmpeg codec nor NVENC, so it cannot reuse
+     * make_avcodec_encode_device() or make_nvenc_encode_device(). It needs a
+     * Vulkan device bound to the same adapter this display captures from, plus a
+     * shared D3D11 fence for the acquire/release handshake. Defaults to nullptr
+     * on platforms where it is not implemented.
+     */
+    virtual std::unique_ptr<encode_device_t> make_pyrowave_encode_device() {
+      return nullptr;
+    }
+
     virtual bool is_hdr() {
       return false;
     }

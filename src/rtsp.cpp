@@ -1008,6 +1008,10 @@ namespace rtsp_stream {
 
       config.controlProtocolType = util::from_view(args.at("x-nv-general.useReliableUdp"sv));
       config.packetsize = util::from_view(args.at("x-nv-video[0].packetSize"sv));
+      // The encoder needs the payload size to packetize into, so keep the video
+      // config in sync. It is appended to config_t rather than substituted for
+      // config.packetsize so the existing readers are untouched.
+      config.monitor.packetsize = config.packetsize;
       config.minRequiredFecPackets = util::from_view(args.at("x-nv-vqos[0].fec.minRequiredFecPackets"sv));
       config.mlFeatureFlags = util::from_view(args.at("x-ml-general.featureFlags"sv));
       config.audioQosType = util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));

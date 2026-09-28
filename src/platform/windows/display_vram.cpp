@@ -27,6 +27,7 @@ extern "C" {
 #include "src/nvenc/nvenc_d3d11_native.h"
 #include "src/nvenc/nvenc_d3d11_on_cuda.h"
 #include "src/nvenc/nvenc_utils.h"
+#include "src/platform/windows/pyrowave_device.h"
 #include "src/video.h"
 
 #if !defined(SUNSHINE_SHADERS_DIR)  // for testing this needs to be defined in cmake as we don't do an install
@@ -128,6 +129,11 @@ namespace platf::dxgi {
   blob_t cursor_ps_normalize_white_hlsl;
   blob_t cursor_vs_hlsl;
 
+  // Forward declaration for the global-scope capture_texture_of() at the end of this
+  // file, which is declared in src/platform/windows/pyrowave_device.h. It has to be
+  // reachable from global scope, hence the qualification there.
+  struct img_d3d_t;
+
   struct img_d3d_t: public platf::img_t {
     // These objects are owned by the display_t's ID3D11Device
     texture2d_t capture_texture;
@@ -156,6 +162,7 @@ namespace platf::dxgi {
       }
     };
   };
+
 
   struct texture_lock_helper {
     keyed_mutex_t _mutex;
@@ -1935,6 +1942,14 @@ namespace platf::dxgi {
     return device;
   }
 
+  std::unique_ptr<encode_device_t> display_vram_t::make_pyrowave_encode_device() {
+    auto device = std::make_unique<d3d_pyrowave_encode_device_t>();
+    if (!device->init_device(shared_from_this(), adapter.get())) {
+      return nullptr;
+    }
+    return device;
+  }
+
   int init() {
     BOOST_LOG(info) << "Compiling shaders..."sv;
 
@@ -1978,4 +1993,30 @@ namespace platf::dxgi {
 
     return 0;
   }
+
 }  // namespace platf::dxgi
+
+// Global scope on purpose: declared the same way in src/pyrowave_device.h, which is
+// where its only consumer (src/pyrowave_encode.cpp) picks it up. It cannot live inside
+// namespace platf::dxgi, because the declaration there would mangle differently and the
+// symbol would not resolve.
+//
+// The definition belongs next to img_d3d_t, which is private to this file and predates
+// any non-D3D11 encoder. An encoder needing the raw D3D11 texture (PyroWave imports it
+// into Vulkan) comes through this accessor rather than replicating the struct, so the
+// layout is known in exactly one place and a change to it cannot silently break the
+// encoder.
+ID3D11Texture2D *capture_texture_of(platf::img_t &img, bool &bgra, bool &valid) {
+  auto *d3d_img = dynamic_cast<platf::dxgi::img_d3d_t *>(&img);
+  if (!d3d_img) {
+    valid = false;
+    bgra = false;
+    return nullptr;
+  }
+
+  valid = true;
+  bgra = d3d_img->format == DXGI_FORMAT_B8G8R8A8_UNORM;
+  // capture_texture is a smart pointer; this is the raw pointer the caller needs. The
+  // image owns the texture, so a borrowed pointer is fine for the duration of the call.
+  return d3d_img->capture_texture.get();
+}

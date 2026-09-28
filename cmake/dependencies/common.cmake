@@ -74,6 +74,7 @@ set(FFMPEG_INCLUDE_DIRS
 # platform specific dependencies
 if(WIN32)
     include("${CMAKE_MODULE_PATH}/dependencies/windows.cmake")
+    include("${CMAKE_MODULE_PATH}/dependencies/pyrowave.cmake")
 elseif(UNIX)
     include("${CMAKE_MODULE_PATH}/dependencies/unix.cmake")
 

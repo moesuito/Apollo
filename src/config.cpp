@@ -446,6 +446,13 @@ namespace config {
     0,  // hevc_mode
     0,  // av1_mode
 
+    0,     // pyrowave_mode
+    {
+      true,  // automatic_bitrate
+      1.1,   // quality_modifier
+      40.0,  // target_psnr
+    },  // pyrowave
+
     2,  // min_threads
     {
       "superfast"s,  // preset
@@ -1110,6 +1117,10 @@ namespace config {
     int_f(vars, "qp", video.qp);
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
+    int_between_f(vars, "pyrowave_mode", video.pyrowave_mode, {0, 3});
+    bool_f(vars, "pyrowave_automatic_bitrate", video.pyrowave.automatic_bitrate);
+    double_between_f(vars, "pyrowave_quality_modifier", video.pyrowave.quality_modifier, {0.1, 4.0});
+    double_between_f(vars, "pyrowave_target_psnr", video.pyrowave.target_psnr, {20.0, 60.0});
     int_f(vars, "min_threads", video.min_threads);
     string_f(vars, "sw_preset", video.sw.sw_preset);
     if (!video.sw.sw_preset.empty()) {

@@ -26,6 +26,22 @@ if(NOT DEFINED CMAKE_CUDA_STANDARD)
 endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
+
+# PyroWave is optional: the build works with or without it, and the encoder is
+# simply absent when the codec was not configured. See
+# cmake/dependencies/pyrowave.cmake.
+if(PYROWAVE_ENABLED)
+    target_link_libraries(sunshine pyrowave_static ${PYROWAVE_LINK_LIBRARIES})
+    target_compile_definitions(sunshine PUBLIC PYROWAVE_ENABLED=1)
+    # The codec is a DLL, so it has to sit next to the executable or the host
+    # fails to start. Copied rather than relying on PATH so a run from the build
+    # tree behaves like an installed one.
+    add_custom_command(TARGET sunshine POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PYROWAVE_DLL}" "$<TARGET_FILE_DIR:sunshine>"
+            COMMENT "Copying libpyrowave-shared-0.dll next to sunshine.exe")
+endif()
+
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 set_target_properties(sunshine PROPERTIES CXX_STANDARD 23
         VERSION ${PROJECT_VERSION}

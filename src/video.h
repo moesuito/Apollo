@@ -7,6 +7,7 @@
 // local includes
 #include "input.h"
 #include "platform/common.h"
+#include "pyrowave_protocol.h"
 #include "thread_safe.h"
 #include "video_colorspace.h"
 
@@ -48,6 +49,11 @@ namespace video {
 
     int encodingFramerate; // Requested display framerate
     bool input_only;
+
+    // The client's UDP payload size, from x-nv-video[0].packetSize. Appended
+    // (never inserted) because this struct is aggregate-initialized in several
+    // places with positional initializers and the order is load-bearing.
+    int packetsize = 1392;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
@@ -120,6 +126,14 @@ namespace video {
       encoder_platform_formats_t::pix_fmt_yuv444_8bit = pix_fmt_yuv444_8bit;
       encoder_platform_formats_t::pix_fmt_yuv444_10bit = pix_fmt_yuv444_10bit;
     }
+  };
+
+  struct encoder_platform_formats_pyrowave: encoder_platform_formats_t {
+    // PyroWave consumes the D3D11 capture texture directly and does its own
+    // scaling and RGB -> YCbCr conversion on the GPU, so it needs none of the
+    // avcodec pixel formats the other encoders list. The only formats that matter
+    // are the ones the capture path can produce, and those are handled by the
+    // image import rather than declared here.
   };
 
   struct encoder_t {
@@ -197,10 +211,34 @@ namespace video {
           return hevc;
         case 2:
           return av1;
+        case VIDEO_FORMAT_PYROWAVE:
+          return pyrowave;
       }
     }
 
-    uint32_t flags;
+    // PyroWave's descriptor. Not part of the av1/hevc/h264 trio: it is a wavelet
+    // intra-only codec with a single 8-bit 4:2:0 profile, so it gets one
+    // descriptor rather than a parallel set.
+    //
+    // Declared last, after `flags`, because every existing encoder is
+    // aggregate-initialized positionally as (name, formats, av1, hevc, h264,
+    // flags). Inserting a member before `flags` would silently reinterpret those
+    // flag expressions as codec_t, so it goes after them and only PyroWave's own
+    // initializer names it.
+    // Bit flags on the encoder itself, set at construction and validated by
+    // probe_encoders(). Distinct from codec_t::capabilities, which is per codec.
+    uint32_t flags = 0;
+
+    // PyroWave's descriptor. Not part of the av1/hevc/h264 trio: it is a wavelet
+    // intra-only codec with a single 8-bit 4:2:0 profile, so it gets one
+    // descriptor rather than a parallel set.
+    //
+    // Declared last, after `flags`, because every existing encoder is
+    // aggregate-initialized positionally as (name, formats, av1, hevc, h264,
+    // flags). A member inserted before `flags` would make those flag expressions
+    // resolve as a codec_t, so it goes after them and only PyroWave's own
+    // initializer names it.
+    codec_t pyrowave;
   };
 
   struct encode_session_t {
@@ -215,6 +253,8 @@ namespace video {
     virtual void invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
   };
 
+  class pyrowave_encode_session_t;
+
   // encoders
   extern encoder_t software;
 
@@ -225,6 +265,7 @@ namespace video {
 #ifdef _WIN32
   extern encoder_t amdvce;
   extern encoder_t quicksync;
+  extern encoder_t pyrowave;
 #endif
 
 #ifdef __linux__

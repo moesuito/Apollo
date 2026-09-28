@@ -277,6 +277,8 @@ namespace platf::dxgi {
 
     std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt) override;
 
+    std::unique_ptr<encode_device_t> make_pyrowave_encode_device() override;
+
     std::atomic<uint32_t> next_image_id;
   };
 

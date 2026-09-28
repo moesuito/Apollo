@@ -29,6 +29,32 @@ namespace config {
     int hevc_mode;
     int av1_mode;
 
+    // PyroWave mode, following the hevc_mode/av1_mode convention:
+    // 0 = auto, 1 = disabled, 2 = SDR, 3 = HDR.
+    // Only 8-bit 4:2:0 SDR is implemented, so 3 parses for forward compatibility
+    // but the probe settles on 2.
+    int pyrowave_mode;
+
+    // Steam reference settings. See IMPLEMENTATION-PLAN.md section 4.
+    struct {
+      // Use the codec author's bitrate regression instead of the raw requested
+      // bitrate. This is the Steam "Automatic Bitrate" toggle, default ON.
+      bool automatic_bitrate;
+
+      // Continuous quality multiplier applied to the per-frame budget. This is
+      // the Steam "Quality Modifier" slider, default 1.1.
+      //
+      // A double even though the rest of this config uses only ints, because the
+      // reference implementation exposes it as a continuous slider and rounding to
+      // an int would make the slider unusable. It is the only double in the
+      // video config.
+      double quality_modifier;
+
+      // Target PSNR in dB for automatic_bitrate. The regression is tabulated from
+      // 30 to 50 dB; values outside that range are clamped.
+      double target_psnr;
+    } pyrowave;
+
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 
     struct {

@@ -32,6 +32,12 @@ extern "C" {
 #include "video.h"
 
 #ifdef _WIN32
+  #include "platform/windows/pyrowave_device.h"
+  #include "pyrowave_encode.h"
+  #include "pyrowave_protocol.h"
+#endif
+
+#ifdef _WIN32
   #include "platform/windows/virtual_display.h"
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
@@ -845,6 +851,29 @@ namespace video {
     },
     PARALLEL_ENCODING
   };
+
+  // PyroWave: not a drop-in alternative to the avcodec encoders, but a different
+  // codec entirely. It gets a single descriptor rather than the av1/hevc/h264
+  // trio, and every option list is empty because the codec exposes exactly one
+  // knob (a per-frame byte ceiling) with no low-latency, async, or skip-frame
+  // settings to configure.
+  encoder_t pyrowave {
+    "pyrowave"sv,
+    std::make_unique<encoder_platform_formats_pyrowave>(),
+    {},  // av1
+    {},  // hevc
+    {},  // h264
+    0,    // flags
+    {
+      {},  // Common options
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "pyrowave"s,
+    },
+  };
 #endif
 
   encoder_t software {
@@ -1050,6 +1079,10 @@ namespace video {
 #ifdef _WIN32
     &quicksync,
     &amdvce,
+    // Last, so it is only chosen when no hardware encoder satisfies the request.
+    // PyroWave is not a drop-in: it has no H.264/HEVC/AV1 support at all, so
+    // listing it first would break every existing stream.
+    &pyrowave,
 #endif
 #ifdef __linux__
     &vaapi,
@@ -1063,10 +1096,8 @@ namespace video {
   static encoder_t *chosen_encoder;
   int active_hevc_mode;
   int active_av1_mode;
-  // Disabled by default. The PyroWave encode session does not exist yet, so advertising
-  // SCM_PYROWAVE would let a client negotiate a format the host cannot produce. This
-  // flips to config::video.pyrowave_mode once the encoder is registered in
-  // probe_encoders() and make_encode_session().
+  // Flipped to 0/2/3 by probe_encoders() once the PyroWave encoder validates.
+  // Until then it stays 1 (disabled) so SCM_PYROWAVE is never advertised.
   int active_pyrowave_mode = 1;
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {
@@ -1512,11 +1543,17 @@ namespace video {
     return 0;
   }
 
+  int encode_pyrowave(int64_t frame_nr, pyrowave_encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
+    return session.encode_frame(frame_nr, packets, channel_data, frame_timestamp);
+  }
+
   int encode(int64_t frame_nr, encode_session_t &session, safe::mail_raw_t::queue_t<packet_t> &packets, void *channel_data, std::optional<std::chrono::steady_clock::time_point> frame_timestamp) {
     if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
       return encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp);
     } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
       return encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp);
+    } else if (auto pyrowave_session = dynamic_cast<pyrowave_encode_session_t *>(&session)) {
+      return encode_pyrowave(frame_nr, *pyrowave_session, packets, channel_data, frame_timestamp);
     }
 
     return -1;
@@ -1902,6 +1939,27 @@ namespace video {
     return std::make_unique<nvenc_encode_session_t>(std::move(encode_device));
   }
 
+  std::unique_ptr<pyrowave_encode_session_t> make_pyrowave_encode_session(const config_t &client_config, std::unique_ptr<platf::d3d_pyrowave_encode_device_t> encode_device) {
+    if (!encode_device) {
+      return nullptr;
+    }
+
+    return std::make_unique<pyrowave_encode_session_t>(
+      encode_device->take_device(),
+      encode_device->take_sync(),
+      client_config.width,
+      client_config.height,
+      client_config,
+      config::stream.fec_percentage,
+      // The client's packet size lives on the per-stream config, not the global
+      // one; it is only known once the SDP offer has been parsed, and this factory
+      // runs after that.
+      client_config.packetsize,
+      config::video.pyrowave.automatic_bitrate,
+      config::video.pyrowave.quality_modifier,
+      config::video.pyrowave.target_psnr);
+  }
+
   std::unique_ptr<encode_session_t> make_encode_session(platf::display_t *disp, const encoder_t &encoder, const config_t &config, int width, int height, std::unique_ptr<platf::encode_device_t> encode_device) {
     if (dynamic_cast<platf::avcodec_encode_device_t *>(encode_device.get())) {
       auto avcodec_encode_device = boost::dynamic_pointer_cast<platf::avcodec_encode_device_t>(std::move(encode_device));
@@ -1910,6 +1968,11 @@ namespace video {
       auto nvenc_encode_device = boost::dynamic_pointer_cast<platf::nvenc_encode_device_t>(std::move(encode_device));
       return make_nvenc_encode_session(config, std::move(nvenc_encode_device));
     }
+#ifdef _WIN32
+    else if (auto pyrowave_encode_device = dynamic_cast<platf::d3d_pyrowave_encode_device_t *>(encode_device.get())) {
+      return make_pyrowave_encode_session(config, std::unique_ptr<platf::d3d_pyrowave_encode_device_t>(static_cast<platf::d3d_pyrowave_encode_device_t *>(encode_device.release())));
+    }
+#endif
 
     return nullptr;
   }
@@ -2143,6 +2206,11 @@ namespace video {
     } else if (dynamic_cast<const encoder_platform_formats_nvenc *>(encoder.platform_formats.get())) {
       result = disp.make_nvenc_encode_device(pix_fmt);
     }
+#ifdef _WIN32
+    else if (dynamic_cast<const encoder_platform_formats_pyrowave *>(encoder.platform_formats.get())) {
+      result = disp.make_pyrowave_encode_device();
+    }
+#endif
 
     if (result) {
       result->colorspace = colorspace;
@@ -2488,6 +2556,69 @@ namespace video {
     VUI_PARAMS = 0x01,  ///< VUI parameters
   };
 
+#ifdef _WIN32
+  /**
+   * @brief Validate the PyroWave encode path end to end.
+   *
+   * There is no bitstream to parse the way validate_config() does for H.264 and
+   * friends, so the checks are: the device binds to the capture adapter, a frame
+   * can be imported from the D3D11 texture, and one frame encodes and packetizes
+   * into something non-empty.
+   *
+   * @return 0 on success, -1 on failure.
+   */
+  int validate_pyrowave(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, const config_t &config) {
+    auto encode_device = disp->make_pyrowave_encode_device();
+    if (!encode_device) {
+      BOOST_LOG(info) << "PyroWave: encode device unavailable"sv;
+      return -1;
+    }
+
+    auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
+    if (!session) {
+      BOOST_LOG(info) << "PyroWave: encode session unavailable"sv;
+      return -1;
+    }
+
+    auto pyrowave_session = dynamic_cast<pyrowave_encode_session_t *>(session.get());
+    if (!pyrowave_session) {
+      return -1;
+    }
+
+    {
+      // Same reasoning as validate_config(): the image is large, so scope it.
+      auto img = disp->alloc_img();
+      if (!img || disp->dummy_img(img.get()) || pyrowave_session->convert(*img)) {
+        BOOST_LOG(info) << "PyroWave: could not import a dummy frame"sv;
+        return -1;
+      }
+    }
+
+    auto packets = mail::man->queue<packet_t>(mail::video_packets);
+    if (pyrowave_session->encode_frame(1, packets, nullptr, {})) {
+      BOOST_LOG(info) << "PyroWave: encode failed during validation"sv;
+      return -1;
+    }
+
+    auto packet = packets->pop();
+    // Every PyroWave frame is intra-only, so this must hold unconditionally. A
+    // false here means the session is reporting the frame type wrongly, which
+    // would break the host's IDR bookkeeping.
+    if (!packet->is_idr()) {
+      BOOST_LOG(error) << "PyroWave: first packet is not an IDR frame"sv;
+      return -1;
+    }
+
+    if (packet->data_size() == 0) {
+      BOOST_LOG(error) << "PyroWave: first packet is empty"sv;
+      return -1;
+    }
+
+    BOOST_LOG(info) << "PyroWave: validated, first frame is "sv << packet->data_size() << " bytes"sv;
+    return 0;
+  }
+#endif
+
   int validate_config(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, const config_t &config) {
     auto encode_device = make_encode_device(*disp, encoder, config);
     if (!encode_device) {
@@ -2652,8 +2783,7 @@ namespace video {
     // Test HDR and YUV444 support
     {
       // H.264 is special because encoders may support YUV 4:4:4 without supporting 10-bit color depth
-      if (encoder.flags & YUV444_SUPPORT) {
-        config_t config_h264_yuv444 {1920, 1080, 60, 1000, 1, 0, 1, 0, 0, 1};
+      if (encoder.flags & YUV444_SUPPORT) {        config_t config_h264_yuv444 {1920, 1080, 60, 1000, 1, 0, 1, 0, 0, 1};
         encoder.h264[encoder_t::YUV444] = disp->is_codec_supported(encoder.h264.name, config_h264_yuv444) &&
                                           validate_config(disp, encoder, config_h264_yuv444) >= 0;
       } else {
@@ -2721,13 +2851,79 @@ namespace video {
     return true;
   }
 
+#ifdef _WIN32
+  /**
+   * @brief Probe the PyroWave encoder on its own.
+   *
+   * Kept out of validate_encoder() and the normal selection loop because PyroWave is
+   * a different codec rather than another implementation of H.264/HEVC/AV1: it has
+   * no SPS to parse, no ref-frame restriction to measure, and no 4:4:4 or HDR variant
+   * to test. All that can be checked is that the device binds, a frame imports, and
+   * one frame encodes into something non-empty.
+   *
+   * @return true when the encoder is usable and PyroWave may be advertised.
+   */
+  bool probe_pyrowave() {
+    if (config::video.pyrowave_mode == 1) {
+      BOOST_LOG(info) << "PyroWave is disabled by configuration"sv;
+      return false;
+    }
+
+    const auto output_name {display_device::map_output_name(config::video.output_name)};
+    std::shared_ptr<platf::display_t> disp;
+    reset_display(disp, pyrowave.platform_formats->dev_type, output_name, config_t {});
+
+    if (!disp) {
+      BOOST_LOG(warning) << "PyroWave: no display available to probe against"sv;
+      return false;
+    }
+
+    config_t config_pyrowave {1920, 1080, 60, 1000, 1, 1, 1, 0, VIDEO_FORMAT_PYROWAVE, 0};
+    config_pyrowave.chromaSamplingType = 0;
+    config_pyrowave.dynamicRange = 0;
+
+    if (validate_pyrowave(disp, pyrowave, config_pyrowave) < 0) {
+      pyrowave.pyrowave.capabilities.reset();
+      return false;
+    }
+
+    pyrowave.pyrowave.capabilities.set();
+    // Only 8-bit 4:2:0 is implemented, so every profile flag but PASSED stays clear.
+    // That is what keeps SCM_PYROWAVE from ever being paired with a 10-bit or 4:4:4
+    // claim the encoder cannot honour.
+    pyrowave.pyrowave[encoder_t::PASSED] = true;
+    pyrowave.pyrowave[encoder_t::DYNAMIC_RANGE] = false;
+    pyrowave.pyrowave[encoder_t::YUV444] = false;
+    pyrowave.pyrowave[encoder_t::REF_FRAMES_RESTRICT] = false;
+    pyrowave.pyrowave[encoder_t::VUI_PARAMETERS] = false;
+    return true;
+  }
+#endif
+
   int probe_encoders() {
     if (!allow_encoder_probing()) {
       // Error already logged
       return -1;
     }
 
+    // PyroWave is a different codec rather than another implementation of
+    // H.264/HEVC/AV1, so it must not take part in the normal selection loop: it has
+    // no SPS to parse and cannot serve an H.264 request at all. Letting it into
+    // encoder_list would let it win a request for H.264 and break every existing
+    // stream. It is probed separately below and only adopted when PyroWave is what
+    // the client asked for.
     auto encoder_list = encoders;
+    encoder_list.erase(std::remove_if(encoder_list.begin(), encoder_list.end(),
+                          [](const encoder_t *enc) {
+                            return dynamic_cast<const encoder_platform_formats_pyrowave *>(enc->platform_formats.get()) != nullptr;
+                          }),
+      encoder_list.end());
+
+    // Probed before the early-out below, because a PyroWave-only request must be able
+    // to replace an already-chosen avcodec encoder.
+#ifdef _WIN32
+    const bool pyrowave_ok = probe_pyrowave();
+#endif
 
     // If we already have a good encoder, check to see if another probe is required
     if (chosen_encoder && !(chosen_encoder->flags & ALWAYS_REPROBE) && !platf::needs_encoder_reenumeration()) {
@@ -2739,6 +2935,41 @@ namespace video {
     chosen_encoder = nullptr;
     active_hevc_mode = config::video.hevc_mode;
     active_av1_mode = config::video.av1_mode;
+    // Reset to disabled so a failed probe cannot leave SCM_PYROWAVE advertised.
+    active_pyrowave_mode = 1;
+
+    // An explicit PyroWave request takes over the whole selection: the client is asking
+    // for VIDEO_FORMAT_PYROWAVE, which none of the avcodec encoders can produce, so
+    // falling through to the normal loop would pick one and then fail at the codec
+    // check in make_avcodec_encode_session().
+    if (config::video.encoder == "pyrowave") {
+#ifdef _WIN32
+      if (pyrowave_ok) {
+        chosen_encoder = &pyrowave;
+        active_pyrowave_mode = 2;
+        BOOST_LOG(info) << "Selected PyroWave encoder by explicit request"sv;
+      }
+      else {
+        BOOST_LOG(error) << "PyroWave was explicitly requested but is not usable on this system"sv;
+        return -1;
+      }
+#else
+      BOOST_LOG(error) << "PyroWave is only implemented on Windows"sv;
+      return -1;
+#endif
+    }
+    else {
+      // Not a PyroWave-only request, so the avcodec encoders carry on as usual. The
+      // probe above still ran, purely to keep active_pyrowave_mode (and therefore the
+      // SCM_PYROWAVE advertisement) in step with reality.
+#ifdef _WIN32
+      if (pyrowave_ok) {
+        active_pyrowave_mode = 2;
+        BOOST_LOG(info) << "PyroWave is available as an option ["sv << pyrowave.name << ']';
+      }
+#endif
+    }
+
     last_encoder_probe_supported_ref_frames_invalidation = false;
 
     auto adjust_encoder_constraints = [&](encoder_t *encoder) {
@@ -2896,7 +3127,6 @@ namespace video {
         BOOST_LOG(debug) << encoder_t::from_flag(flag) << (encoder.av1[flag] ? ": supported"sv : ": unsupported"sv);
       }
       BOOST_LOG(debug) << "-------------------"sv;
-
       BOOST_LOG(info) << "Found AV1 encoder: "sv << encoder.av1.name << " ["sv << encoder.name << ']';
     }
 
@@ -2907,6 +3137,12 @@ namespace video {
     if (active_av1_mode == 0) {
       active_av1_mode = encoder.av1[encoder_t::PASSED] ? (encoder.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
+
+#ifdef _WIN32
+    if (active_pyrowave_mode >= 2) {
+      BOOST_LOG(info) << "PyroWave encoder is available (SDR 4:2:0 8-bit) ["sv << pyrowave.name << ']';
+    }
+#endif
 
     return 0;
   }
