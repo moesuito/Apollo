@@ -826,11 +826,13 @@ namespace video {
       },
       {
         // SDR-specific options
-        {"profile"s, [](const config_t &cfg) {
-           if (cfg.profile == 66) return "baseline"s;
-           if (cfg.profile == 77) return "main"s;
-           return "high"s;
-         }},
+        //
+        // NOTE: this used to read a non-existent `config_t::profile` field, which broke
+        // the Windows build outright (video.cpp failed to compile, so sunshine.exe could
+        // not be produced at all). There is no `profile` setting in the config schema, so
+        // the H.264 profile is pinned to high (100) here, matching the other encoders in
+        // this file (nvenc/qsv/amdvce all use profile_h264_e::high for SDR H.264).
+        {"profile"s, (int) nv::profile_h264_e::high},
       },
       {},  // HDR-specific options
       {},  // YUV444 SDR-specific options
@@ -1061,6 +1063,11 @@ namespace video {
   static encoder_t *chosen_encoder;
   int active_hevc_mode;
   int active_av1_mode;
+  // Disabled by default. The PyroWave encode session does not exist yet, so advertising
+  // SCM_PYROWAVE would let a client negotiate a format the host cannot produce. This
+  // flips to config::video.pyrowave_mode once the encoder is registered in
+  // probe_encoders() and make_encode_session().
+  int active_pyrowave_mode = 1;
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {
     true,
